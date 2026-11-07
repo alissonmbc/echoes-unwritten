@@ -4,8 +4,15 @@ export class CollisionWorld {
   #cells = new Map();
 
   constructor({ corridor, colliders = [], wallS = Infinity, cell = 4 }) {
-    Object.assign(this, { corridor, colliders, wallS, cell });
+    Object.assign(this, { corridor, wallS, cell, colliders: [] });
+    this.add(colliders);
+  }
+  #key(v) { return Math.floor(v / this.cell); }
+
+  // Assets load after the world exists, so solids can arrive late.
+  add(colliders) {
     for (const c of colliders) {
+      this.colliders.push(c);
       for (let i = this.#key(c.x - c.r); i <= this.#key(c.x + c.r); i++) for (let j = this.#key(c.z - c.r); j <= this.#key(c.z + c.r); j++) {
         const k = `${i},${j}`;
         if (!this.#cells.has(k)) this.#cells.set(k, []);
@@ -13,7 +20,6 @@ export class CollisionWorld {
       }
     }
   }
-  #key(v) { return Math.floor(v / this.cell); }
 
   // Cylinders within reach of a point. reach must stay under one cell for the 3x3 search to be enough.
   #near(x, z) {
@@ -51,8 +57,9 @@ export class CollisionWorld {
 
   solidAt(x, y, z, pad = 0) {
     const { u, s } = this.corridor.project(x, z);
-    if (s > this.wallS) return true;
-    if (y < this.corridor.roadY(u) + this.corridor.offset(s) + pad) return true;
+    if (u > 0 && s > this.wallS) return true;   // u=0 is beyond the road's start, where the cliff stops
+    if (y < this.corridor.heightAt(x, z) + pad) return true;
+    if (this.corridor.solidBox?.(x, y, z, pad)) return true;
     for (const c of this.#near(x, z)) if (y < c.top + pad && (x - c.x) ** 2 + (z - c.z) ** 2 < (c.r + pad) ** 2) return true;
     return false;
   }

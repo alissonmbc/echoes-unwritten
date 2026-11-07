@@ -53,7 +53,7 @@ export class PlayerMotor {
     let { x, z } = w.slide(this.x + this.vx * h, this.z + this.vz * h, this.y, c.radius, c.step);
     if (this.grounded) {
       // terrain only: a step up is a jump in height, which would read as an impossible slope
-      const dist = Math.hypot(x - this.x, z - this.z), rise = w.corridor.heightAt(x, z) - w.corridor.heightAt(this.x, this.z);
+      const dist = Math.hypot(x - this.x, z - this.z), rise = w.corridor.terrainAt(x, z) - w.corridor.terrainAt(this.x, this.z);
       if (dist > 1e-6 && rise / dist > c.slopeMax) { x = this.x; z = this.z; }
     }
     // keep only the speed that actually happened, so walls don't store it up

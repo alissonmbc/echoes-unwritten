@@ -37,11 +37,15 @@ export class RoadCorridor {
     return p[p.length - 1][1];
   }
   roadY(u) { return this.#frame(u).y; }
-  heightAt(x, z) { const { u, s } = this.project(x, z); return this.roadY(u) + this.offset(s); }
+  // terrainAt is always the smooth road surface; heightAt can also include floors, which come in steps
+  terrainAt(x, z) { const { u, s } = this.project(x, z); return this.roadY(u) + this.offset(s); }
+  heightAt(x, z) { return this.terrainAt(x, z); }
 
   // Keeps a position on the strip. Past the edges it slides along them, so you can't walk off the cliff.
   clamp(x, z) {
-    const { u, s } = this.project(x, z), cu = clamp(u, this.uMin, this.uMax), cs = clamp(s, this.sMin, this.sMax);
-    return cu === u && cs === s ? { x, z } : this.point(cu, cs);
+    const { u, s } = this.project(x, z), cu = clamp(u, this.uMin, this.uMax), cs = clamp(s, this.sMin, this.sMax), p = this.point(cu, cs);
+    if (cu !== u || cs !== s) return p;
+    // past either end of the road, u and s look valid however far away you are
+    return (u <= 0 || u >= 1) && Math.hypot(p.x - x, p.z - z) > .01 ? p : { x, z };
   }
 }

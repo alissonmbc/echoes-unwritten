@@ -60,9 +60,13 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createShell } from './src/app/shell.js';
-import { RoadCorridor } from './src/world/corridor.js';
 import { CollisionWorld } from './src/world/collision.js';
-import { PlayerMotor } from './src/world/motor.js';
+import { PlayerMotor, TUNING } from './src/world/motor.js';
+import { ZonedSurface, validateZone } from './src/world/zone.js';
+import { TriggerSet } from './src/world/triggers.js';
+import { WAYFARER } from './src/world/wayfarer.js';
+import { buildZoneMesh } from './src/world/blockout.js';
+import { footprintColliders } from './src/world/footprint.js';
 
 const V3 = THREE.Vector3, MU = THREE.MathUtils, UP = new V3(0,1,0);
 
@@ -652,15 +656,21 @@ composer.addPass(new OutputPass());
 
 /* ---------- controls ---------- */
 // S.yaw is the camera's world heading. ?yaw= and AUTO_YAW are relative to the road, which is what framing wants.
-const AUTO_YAW=.3, START_U=.12, START_S=.7;
-const S={ u:START_U, s:START_S, speed:0, yaw:0, pitch:.02, dist:5.4, boom:1, auto:true, phase:0, drag:null, dragEnd:-9 };
+const AUTO_YAW=.3, START_U=.12, START_S=.7, CAM_LIFTS=[0,1.2,2.4,3.6];
+const S={ u:START_U, s:START_S, speed:0, yaw:0, pitch:.02, dist:5.4, boom:1, lift:0, auto:true, phase:0, drag:null, dragEnd:-9 };
 let startYaw=AUTO_YAW;
 { const q=new URLSearchParams(location.search); if(q.get('u')){ S.u=+q.get('u'); S.auto=false; } if(q.get('yaw')) startYaw=+q.get('yaw'); if(q.get('pitch')) S.pitch=+q.get('pitch'); }
 
 // Walkable space. The profile and limits follow the road, lip and shelf sheets built above, so change them together.
-const corridor=new RoadCorridor({ frames:FR, uMin:.1, uMax:.93, sMin:-(HALF+.55), sMax:HALF+2.1,
-  profile:[[-(HALF+.7),-.27],[-HALF,crown(HALF)],[0,0],[HALF,crown(HALF)],[HALF+.3,-.2],[HALF+2.4,-.1]] });
+const corridor=new ZonedSurface({ frames:FR, uMin:0, uMax:.93, sMin:-(HALF+.55), sMax:HALF+2.1,
+  profile:[[-(HALF+.7),-.27],[-HALF,crown(HALF)],[0,0],[HALF,crown(HALF)],[HALF+.3,-.2],[HALF+2.4,-.1]] }, WAYFARER);
+for(const problem of validateZone(WAYFARER,TUNING.step)) console.error(`${WAYFARER.id}: ${problem}`);
+scene.add(buildZoneMesh(WAYFARER,gateMat));
+// rock under the ruin, so it reads as a headland and not a floating block; two masses leave the gap under the bridge
+for(const [x,y,z,sx,sy,sz,i] of [[0,-30,64,19,30,20,0],[0,-30,99,13,28,10,1]]){ const b=mesh(boulders[i],rockMat,{recv:true}); b.position.set(x,y,z); b.scale.set(sx,sy,sz); }
+{ const crystal=mesh(new THREE.OctahedronGeometry(.3,0),glowMat); const {x,z}=WAYFARER.anchors[0]; crystal.position.set(x,3.05,z); }
 const colliders=[
+  ...WAYFARER.colliders,
   ...lamps.map(L=>({ x:L.g.position.x, z:L.g.position.z, r:.3, top:Infinity })),
   // boulders are lumpy, so these sit a little inside the visible rock and can be climbed
   ...boulderMeshes.map(b=>({ x:b.position.x, z:b.position.z, r:.55*(b.scale.x+b.scale.z)/2, top:b.position.y+.55*b.scale.y })),
@@ -674,16 +684,19 @@ const world=new CollisionWorld({ corridor, colliders, wallS:HALF+2.3 });
 const motor=new PlayerMotor(world);
 const roadYaw=u=>{ const {t}=fr(u); return Math.atan2(t.x,t.z); };
 function spawn(u,s,yawOffset){ const {x,z}=corridor.point(u,s); motor.teleport(x,z,roadYaw(u)); S.yaw=roadYaw(u)+yawOffset; S.boom=1; first=true; }
+const triggerLog=[];   // QuestManager subscribes here once it exists (B-007)
+const triggers=new TriggerSet(WAYFARER.triggers.map(t=>t.u===undefined?t:{...t,...corridor.point(t.u,t.s)}),e=>{ triggerLog.push(e); document.documentElement.dataset.trigger=e.triggerId; });
 const autoBtn=document.getElementById('autoBtn'), refBtn=document.getElementById('refBtn'), refBox=document.getElementById('ref'), fadeEl=document.getElementById('fade');
 const setAuto=v=>{ S.auto=v; autoBtn.classList.toggle('on',v); };
 // blur, or a later Space press would click the focused button as well as being routed
-autoBtn.onclick=()=>{ setAuto(!S.auto); autoBtn.blur(); };
+// auto-walk follows the road, so from the ruin it starts at the road
+autoBtn.onclick=()=>{ setAuto(!S.auto); if(S.auto&&corridor.floorAt(motor.x,motor.z)) spawn(START_U,START_S,AUTO_YAW); autoBtn.blur(); };
 refBtn.onclick=()=>{ const on=refBox.style.display!=='block'; refBox.style.display=on?'block':'none'; refBtn.classList.toggle('on',on); refBtn.blur(); };
 const refImg=refBox.querySelector('img'); refImg.onerror=()=>refBtn.remove(); refImg.src='ref.jpg';   // ref.jpg is local-only, not in the public repo
 const shell=createShell({
   menuRoot:document.getElementById('menu'),
-  onNewGame(){ spawn(START_U,START_S,0); Object.assign(S,{pitch:.02,dist:5.4}); setAuto(false); },
-  onQuitToTitle(){ setAuto(true); },   // the title screen walks the road behind the menu
+  onNewGame(){ const {x,z,heading}=WAYFARER.spawn; motor.teleport(x,z,heading); Object.assign(S,{yaw:heading,boom:1,pitch:.02,dist:5.4}); first=true; triggers.reset(); setAuto(false); },
+  onQuitToTitle(){ spawn(START_U,START_S,AUTO_YAW); setAuto(true); },   // the title screen walks the road behind the menu
   onAction(a){ if(a.startsWith('Move')) setAuto(false); else if(a==='Jump') motor.jump(); },
   onModeChange(){ S.drag=null; },
 });
@@ -714,6 +727,7 @@ function update(dt){
   }
   motor.step(dt,intent);
   ({u:S.u,s:S.s}=corridor.project(motor.x,motor.z));
+  if(modes.mode==='Exploration'&&!auto) triggers.update(motor.x,motor.z);
   S.speed=motor.grounded?motor.speed:0;   // drives the walk cycle, so it stops in the air
   if(auto&&S.u>=corridor.uMax-.005&&!resetting){ resetting=true; fadeEl.style.opacity=1; setTimeout(()=>{ if(S.auto) spawn(START_U,START_S,AUTO_YAW); fadeEl.style.opacity=0; resetting=false; },1300); }
   const hp=new V3(motor.x,motor.y,motor.z);
@@ -746,11 +760,19 @@ function update(dt){
   const cf=new V3(Math.sin(S.yaw),0,Math.cos(S.yaw)), crt=new V3(-cf.z,0,cf.x), zoom=S.dist/5.4;
   const wantPos=camPivot.clone().addScaledVector(cf,-S.dist).addScaledVector(crt,-1.05); wantPos.y+=(2.3+S.pitch*5)*zoom;
   camLook.copy(camPivot).addScaledVector(cf,10).addScaledVector(crt,-1.05); camLook.y+=1.2-S.pitch*4;
-  // the boom shortens at once so it never enters a wall, and eases back out
+  // a low wall behind: rise over it and keep the distance, rather than pulling in
   camHead.copy(camPivot); camHead.y+=1.5;
+  let bestClear=-1, bestLift=0;
+  for(const h of CAM_LIFTS){ tmp.copy(wantPos); tmp.y+=h; const c=world.clearFraction(camHead,tmp); if(c>bestClear+.1){ bestClear=c; bestLift=h; } if(c>=.99) break; }
+  S.lift=first?bestLift:lerp(S.lift,bestLift,1-Math.exp(-dt*6));
+  wantPos.y+=S.lift;
+  // the boom shortens at once so it never enters a wall, and eases back out
   const clear=world.clearFraction(camHead,wantPos);
   S.boom=clear<S.boom||first?clear:lerp(S.boom,clear,1-Math.exp(-dt*3));
   camPos.copy(camHead).lerp(wantPos,S.boom);
+  // the higher or closer the camera, the more it looks down, so the hero stays in frame
+  const tight=1-S.boom; camPos.y+=tight*1.8;
+  camLook.lerp(tmp.copy(camPivot).addScaledVector(cf,.3).setY(camPivot.y+1.2),Math.max(tight,S.lift/CAM_LIFTS.at(-1)*.7));
   first=false;
   camera.position.copy(camPos); camera.lookAt(camLook);
   sky.position.copy(camera.position);
@@ -930,6 +952,19 @@ function useRocks(gltf){
     list.forEach((x,i)=>im.setMatrixAt(i,x));
     im.castShadow=cast; im.receiveShadow=true; im.frustumCulled=false; scene.add(im);
   }
+  // collision comes from the rocks themselves: whatever reaches body height near the road is solid, up to the rock's real top
+  const solids=[], v=new V3(), c=new V3();
+  for(const {type,lo,list} of groups.values()){
+    const pos=node(`rock_${type}${lo?'_lo':''}`).geometry.attributes.position, step=Math.max(1,Math.floor(pos.count/1500));
+    for(const x of list){
+      c.setFromMatrixPosition(x);
+      if(Math.abs(corridor.project(c.x,c.z).s)>14) continue;
+      const ground=corridor.heightAt(c.x,c.z), pts=[]; let top=-Infinity;
+      for(let i=0;i<pos.count;i+=step){ v.fromBufferAttribute(pos,i).applyMatrix4(x); top=Math.max(top,v.y); const h=v.y-ground; if(h>.12&&h<2.4) pts.push(v.x,v.z); }
+      solids.push(...footprintColliders(pts,{top}));
+    }
+  }
+  world.add(solids);
   // ivy was grown on each rock in Blender, so it shares that rock's instance matrices
   ivyLists.forEach((l,k)=>{ if(!l.length) return; const v=node('ivy_'+k), im=new THREE.InstancedMesh(v.geometry,v.material,l.length); l.forEach((x,i)=>im.setMatrixAt(i,x)); im.frustumCulled=false; im.receiveShadow=true; scene.add(im); });
 }
@@ -979,7 +1014,7 @@ function loop(){
   composer.render();
   requestAnimationFrame(loop);
 }
-const assetState=window.__lumina={ renderer, camera, shell, S, motor, world, corridor, colliders };
+const assetState=window.__lumina={ renderer, scene, camera, shell, S, motor, world, corridor, colliders:world.colliders, triggerLog, WAYFARER };
 // also on <html data-road="glb">, so tests/smoke.ps1 can read each asset's result from a headless DOM dump
 const markAsset=(name,state)=>{ assetState[name]=state; document.documentElement.dataset[name]=state; };
 // published artifacts can't serve .glb, so they use the JSON copies from blender/glb_to_json.py
