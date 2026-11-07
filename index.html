@@ -24,6 +24,18 @@
   #ref div{position:absolute;left:0;top:0;background:rgba(18,16,24,.7);padding:2px 8px;font-size:13px}
   #fade{position:fixed;inset:0;background:#1b1511;opacity:1;transition:opacity 1.2s;pointer-events:none;display:flex;align-items:center;justify-content:center;font-size:22px;letter-spacing:.08em}
   #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:30px;font-size:18px}
+  html:not([data-mode="Exploration"]) :is(#title,#btns,#hint,#ref){display:none}
+  #menu{display:none;position:fixed;inset:0;flex-direction:column;justify-content:center;gap:10px}
+  #menu.title,#menu.pause{display:flex}
+  #menu.title{align-items:flex-start;padding:0 clamp(24px,8vw,120px);background:linear-gradient(90deg,rgba(14,13,24,.82),rgba(14,13,24,.45) 42%,rgba(14,13,24,0) 70%)}
+  #menu.pause{align-items:center;background:rgba(14,13,24,.62)}
+  #menu h2{margin:0;font-size:clamp(34px,5vw,60px);font-weight:700;letter-spacing:.03em;line-height:1.05}
+  #menu p{margin:0 0 18px;font-size:clamp(18px,2vw,24px);letter-spacing:.3em;text-transform:uppercase;color:#e6c46e}
+  #menu.pause h2{margin-bottom:18px}
+  #menu button{width:min(320px,80vw);display:flex;justify-content:space-between;align-items:baseline;padding:10px 16px;font-size:20px;text-align:left;background:rgba(18,16,30,.72)}
+  #menu button small{font-size:14px;opacity:.85}
+  #menu button.focus{outline:2px solid #8fd8ee;outline-offset:1px;background:rgba(44,40,66,.9)}
+  #menu button:disabled{color:rgba(244,234,216,.6);border-color:rgba(216,182,100,.3);cursor:default}
   @media (max-width:640px){#hint{font-size:13px}#title h1{font-size:18px}}
 </style>
 <script type="importmap">
@@ -34,7 +46,8 @@
 <div id="title" class="panel"><h1><span>&#10022;</span>The Cliffroad to Lumina</h1><p>Rebuilt from your clip &middot; Blender + Three.js</p></div>
 <div id="btns"><button id="autoBtn" class="on">Auto-walk</button><button id="refBtn">Reference</button></div>
 <div id="ref"><img alt="Reference frame from the source video"><div>Source frame</div></div>
-<div id="hint">Drag to look &middot; WASD / arrows to walk &middot; Shift to run</div>
+<div id="hint">Drag to look &middot; Wheel to zoom &middot; WASD / arrows to walk &middot; Shift to sprint &middot; Space to jump &middot; Esc to pause</div>
+<div id="menu"></div>
 <div id="fade">Building the world&hellip;</div>
 <div id="err"></div>
 
@@ -46,6 +59,10 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { createShell } from './src/app/shell.js';
+import { RoadCorridor } from './src/world/corridor.js';
+import { CollisionWorld } from './src/world/collision.js';
+import { PlayerMotor } from './src/world/motor.js';
 
 const V3 = THREE.Vector3, MU = THREE.MathUtils, UP = new V3(0,1,0);
 
@@ -332,6 +349,7 @@ function windify(mat, amt){
   };
   return mat;
 }
+const forests={};   // what foliage.glb replaces: the grass, and the near and pillar-top trees. The valley forest is too far away to need it.
 function grassGeo(){
   const P=[],C=[],N=[], lo=new THREE.Color(0x2c3a1a), hi=new THREE.Color(0xa7ad55);
   for(let b=0;b<10;b++){
@@ -348,7 +366,7 @@ function grassGeo(){
     const s = side>0 ? rr(HALF-.25,HALF+1.4) : -rr(HALF-.25,HALF+.7);
     spots.push([place(u,s,s>HALF?-.1:-.05), rr(.6,1.25)]); }
   for(let i=0;i<500;i++){ spots.push([place(rnd(), rr(-HALF+.3,HALF-.3), -.02), rr(.2,.38)]); }
-  const im=new THREE.InstancedMesh(grassGeo(), gm, spots.length), m=new THREE.Matrix4(), q=new THREE.Quaternion();
+  const im=forests.grass=new THREE.InstancedMesh(grassGeo(), gm, spots.length), m=new THREE.Matrix4(), q=new THREE.Quaternion();
   spots.forEach(([p,s],i)=>{ q.setFromAxisAngle(UP,rnd()*6); m.compose(p,q,new V3(s,s*rr(.8,1.3),s)); im.setMatrixAt(i,m); });
   im.receiveShadow=true; scene.add(im);
   // flowers
@@ -378,9 +396,10 @@ function forest(list, shadows){
   const a=new THREE.InstancedMesh(TRUNK, trunkMat, list.length), b=new THREE.InstancedMesh(CANOPY, foliageMat, list.length), m=new THREE.Matrix4(), q=new THREE.Quaternion();
   list.forEach((t,i)=>{ q.setFromAxisAngle(UP,rnd()*6); m.compose(t.p,q,new V3(t.s,t.s*rr(.85,1.2),t.s)); a.setMatrixAt(i,m); b.setMatrixAt(i,m); b.setColorAt(i,new THREE.Color().setHSL(rr(.18,.26),rr(.3,.5),rr(.6,.78))); });
   a.castShadow=b.castShadow=shadows; b.receiveShadow=shadows; scene.add(a,b);
+  return [a,b];
 }
 { const near=[]; for(const u of [.07,.25,.4,.69,.88]) near.push({p:place(u,-rr(HALF+2.4,HALF+3.4),-2.6), s:rr(.7,1.0)});
-  forest(near, true); }
+  forests.near=forest(near, true); }
 
 /* ---------- lamp posts with lanterns + banners ---------- */
 const banners=[], lanterns=[], lamps=[];
@@ -480,7 +499,7 @@ const pillars=[[-42,-60,-20,9],[-55,-15,-16,12],[-85,-110,-30,14],[-46,-175,-30,
     const n=Math.floor(r/2.5); for(let k=0;k<n;k++){ const a=rnd()*6, d=rnd()*r*.55; tops.push({p:new V3(x+Math.cos(a)*d,ty-.3,z+Math.sin(a)*d), s:rr(1.3,2.3)}); }
     if([1,2,5,8].includes(i)){ const dir=new V3(-x,0,-z).normalize(); waterfall(new V3(x,ty-.6,z).addScaledVector(dir,r*.82), dir, r*.35, 110); }
   });
-  forest(tops, false);
+  forests.tops=forest(tops, false);
 }
 {
   const g=new THREE.PlaneGeometry(3400,1400,280,110); g.rotateX(-Math.PI/2); g.translate(-300,0,-1060);
@@ -632,49 +651,84 @@ composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight), 
 composer.addPass(new OutputPass());
 
 /* ---------- controls ---------- */
-const S={ u:.12, s:.7, speed:0, yaw:.3, pitch:.02, auto:true, phase:0, heading:Math.PI, drag:null };
-const keys={};
-{ const q=new URLSearchParams(location.search); if(q.get('u')){ S.u=+q.get('u'); S.auto=false; } if(q.get('yaw')) S.yaw=+q.get('yaw'); if(q.get('pitch')) S.pitch=+q.get('pitch'); }
+// S.yaw is the camera's world heading. ?yaw= and AUTO_YAW are relative to the road, which is what framing wants.
+const AUTO_YAW=.3, START_U=.12, START_S=.7;
+const S={ u:START_U, s:START_S, speed:0, yaw:0, pitch:.02, dist:5.4, boom:1, auto:true, phase:0, drag:null, dragEnd:-9 };
+let startYaw=AUTO_YAW;
+{ const q=new URLSearchParams(location.search); if(q.get('u')){ S.u=+q.get('u'); S.auto=false; } if(q.get('yaw')) startYaw=+q.get('yaw'); if(q.get('pitch')) S.pitch=+q.get('pitch'); }
+
+// Walkable space. The profile and limits follow the road, lip and shelf sheets built above, so change them together.
+const corridor=new RoadCorridor({ frames:FR, uMin:.1, uMax:.93, sMin:-(HALF+.55), sMax:HALF+2.1,
+  profile:[[-(HALF+.7),-.27],[-HALF,crown(HALF)],[0,0],[HALF,crown(HALF)],[HALF+.3,-.2],[HALF+2.4,-.1]] });
+const colliders=[
+  ...lamps.map(L=>({ x:L.g.position.x, z:L.g.position.z, r:.3, top:Infinity })),
+  // boulders are lumpy, so these sit a little inside the visible rock and can be climbed
+  ...boulderMeshes.map(b=>({ x:b.position.x, z:b.position.z, r:.55*(b.scale.x+b.scale.z)/2, top:b.position.y+.55*b.scale.y })),
+];
+// arch walls, columns and the tower, in the arch's own axes (+x toward the cliff)
+archway.g.updateMatrixWorld(true);
+for(const [x,z,r] of [[-3.85,0,.9],[3.85,0,.9],[4.6,0,.9],[-3.75,1.25,.62],[3.75,1.25,.62],[5.4,-1.2,.85]]){
+  const w=new V3(x,0,z).applyMatrix4(archway.g.matrixWorld); colliders.push({ x:w.x, z:w.z, r, top:Infinity });
+}
+const world=new CollisionWorld({ corridor, colliders, wallS:HALF+2.3 });
+const motor=new PlayerMotor(world);
+const roadYaw=u=>{ const {t}=fr(u); return Math.atan2(t.x,t.z); };
+function spawn(u,s,yawOffset){ const {x,z}=corridor.point(u,s); motor.teleport(x,z,roadYaw(u)); S.yaw=roadYaw(u)+yawOffset; S.boom=1; first=true; }
 const autoBtn=document.getElementById('autoBtn'), refBtn=document.getElementById('refBtn'), refBox=document.getElementById('ref'), fadeEl=document.getElementById('fade');
 const setAuto=v=>{ S.auto=v; autoBtn.classList.toggle('on',v); };
-autoBtn.onclick=()=>setAuto(!S.auto);
-refBtn.onclick=()=>{ const on=refBox.style.display!=='block'; refBox.style.display=on?'block':'none'; refBtn.classList.toggle('on',on); };
+// blur, or a later Space press would click the focused button as well as being routed
+autoBtn.onclick=()=>{ setAuto(!S.auto); autoBtn.blur(); };
+refBtn.onclick=()=>{ const on=refBox.style.display!=='block'; refBox.style.display=on?'block':'none'; refBtn.classList.toggle('on',on); refBtn.blur(); };
 const refImg=refBox.querySelector('img'); refImg.onerror=()=>refBtn.remove(); refImg.src='ref.jpg';   // ref.jpg is local-only, not in the public repo
-const MOVE=['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'];
-addEventListener('keydown',e=>{ keys[e.code]=true; if(MOVE.includes(e.code)){ setAuto(false); e.preventDefault(); } });
-addEventListener('keyup',e=>{ keys[e.code]=false; });
+const shell=createShell({
+  menuRoot:document.getElementById('menu'),
+  onNewGame(){ spawn(START_U,START_S,0); Object.assign(S,{pitch:.02,dist:5.4}); setAuto(false); },
+  onQuitToTitle(){ setAuto(true); },   // the title screen walks the road behind the menu
+  onAction(a){ if(a.startsWith('Move')) setAuto(false); else if(a==='Jump') motor.jump(); },
+  onModeChange(){ S.drag=null; },
+});
+const {modes,input}=shell;
 const cv=renderer.domElement;
-cv.addEventListener('pointerdown',e=>{ S.drag={x:e.clientX,y:e.clientY}; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener('pointerdown',e=>{ if(!input.allows('Look')) return; S.drag={x:e.clientX,y:e.clientY}; cv.setPointerCapture(e.pointerId); });
 cv.addEventListener('pointermove',e=>{ if(!S.drag) return; S.yaw-=(e.clientX-S.drag.x)*.005; S.pitch=MU.clamp(S.pitch+(e.clientY-S.drag.y)*.003,-.15,.6); S.drag={x:e.clientX,y:e.clientY}; });
-const endDrag=()=>{ S.drag=null; }; cv.addEventListener('pointerup',endDrag); cv.addEventListener('pointercancel',endDrag);
+const endDrag=()=>{ if(S.drag) S.dragEnd=time; S.drag=null; }; cv.addEventListener('pointerup',endDrag); cv.addEventListener('pointercancel',endDrag);
+cv.addEventListener('wheel',e=>{ if(!input.allows('Zoom')) return; e.preventDefault(); S.dist=MU.clamp(S.dist*Math.exp(e.deltaY*.001),3.2,8); },{passive:false});
 addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); composer.setSize(innerWidth,innerHeight); });
 
 const lerpAngle=(a,b,k)=>{ const d=((b-a+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI; return a+d*k; };
-const camPos=new V3(), camLook=new V3(); let first=true, resetting=false, time=0;
+const camPivot=new V3(), camPos=new V3(), camLook=new V3(), camHead=new V3(); let first=true, resetting=false, time=0;
 const tmp=new V3();
+spawn(S.u,START_S,startYaw);
 
 function update(dt){
   time+=dt; clockU.value=time; windU.value=time;
-  let fwd=0, side=0, run=keys.ShiftLeft||keys.ShiftRight?2.1:1;
-  if(S.auto){ fwd=1; S.s=lerp(S.s, .7+Math.sin(time*.13)*.9, dt*.4); }
-  else { if(keys.KeyW||keys.ArrowUp) fwd+=1; if(keys.KeyS||keys.ArrowDown) fwd-=1; if(keys.KeyA||keys.ArrowLeft) side-=1; if(keys.KeyD||keys.ArrowRight) side+=1; }
-  S.speed=lerp(S.speed, fwd*1.55*run, 1-Math.exp(-dt*4));
-  S.u+=S.speed*dt/PATH_LEN; S.s=MU.clamp(S.s+side*1.6*dt,-(HALF-.55),HALF-.5);
-  if(S.u>.93){ if(S.auto&&!resetting){ resetting=true; fadeEl.style.opacity=1; setTimeout(()=>{ S.u=.12; first=true; fadeEl.style.opacity=0; resetting=false; },1300); } S.u=Math.min(S.u,.93); }
-  S.u=Math.max(S.u,.1);
-  const p=curve.getPointAt(S.u), t=curve.getTangentAt(S.u), r=new V3().crossVectors(t,UP).normalize();
-  const hp=p.clone().addScaledVector(r,S.s); hp.y+=crown(S.s);
-  const k=MU.clamp(Math.abs(S.speed)/1.55,0,1.6);
+  const auto=S.auto&&(modes.mode==='MainMenu'||modes.mode==='Exploration');
+  const f=new V3(Math.sin(S.yaw),0,Math.cos(S.yaw)), rc=new V3(-f.z,0,f.x);
+  const intent={x:0,z:0,sprint:false};
+  if(auto){   // the title screen and the Auto-walk button drive the same motor as the player
+    const {t,r}=fr(S.u), lean=MU.clamp((.7+Math.sin(time*.13)*.9-S.s)*.3,-.5,.5);
+    intent.x=(t.x+r.x*lean)*.7; intent.z=(t.z+r.z*lean)*.7;
+  } else {
+    const fwd=input.held('MoveForward')-input.held('MoveBack'), side=input.held('MoveRight')-input.held('MoveLeft');
+    intent.x=f.x*fwd+rc.x*side; intent.z=f.z*fwd+rc.z*side; intent.sprint=input.held('Sprint');
+  }
+  motor.step(dt,intent);
+  ({u:S.u,s:S.s}=corridor.project(motor.x,motor.z));
+  S.speed=motor.grounded?motor.speed:0;   // drives the walk cycle, so it stops in the air
+  if(auto&&S.u>=corridor.uMax-.005&&!resetting){ resetting=true; fadeEl.style.opacity=1; setTimeout(()=>{ if(S.auto) spawn(START_U,START_S,AUTO_YAW); fadeEl.style.opacity=0; resetting=false; },1300); }
+  const hp=new V3(motor.x,motor.y,motor.z);
+  const k=MU.clamp(S.speed/1.55,0,1.6);
   S.phase+=S.speed*dt*4.3;
-  if(Math.abs(S.speed)>.05||side){ const d=t.clone().multiplyScalar(Math.sign(S.speed)||0).addScaledVector(r,side*.7); if(d.lengthSq()>.001) S.heading=lerpAngle(S.heading,Math.atan2(d.x,d.z),1-Math.exp(-dt*8)); }
-  hero.g.position.copy(hp); hero.g.rotation.y=S.heading;
+  hero.g.position.copy(hp); hero.g.rotation.y=motor.heading;
   if(hero.anim) stepHeroWalk(dt); else hero.g.position.y+=Math.abs(Math.sin(S.phase))*.045*k;
   hero.legs[0].rotation.x=Math.sin(S.phase)*.6*k; hero.legs[1].rotation.x=-Math.sin(S.phase)*.6*k;
   hero.arms[0].rotation.x=-Math.sin(S.phase)*.45*k; hero.arms[1].rotation.x=Math.sin(S.phase)*.45*k;
   { const a=hero.scarf.geometry.attributes.position, b=hero.scarf.userData.base;
     for(let i=0;i<a.count;i++){ const y=b[i*3+1]; a.setZ(i,b[i*3+2]+y*(.25+.45*k)*.6+Math.sin(time*7+y*6)*.05*(-y)); } a.needsUpdate=true; }
   // companion
-  const catT=p.clone().addScaledVector(r,MU.clamp(S.s-1.05,-(HALF-.4),HALF-.4)).addScaledVector(t,-.4*Math.sign(S.speed||1)); catT.y+=crown(S.s-1.05);
+  const hd=new V3(Math.sin(motor.heading),0,Math.cos(motor.heading));
+  const catT=hp.clone().addScaledVector(hd,-.4).add(new V3(hd.z,0,-hd.x).multiplyScalar(1.05));
+  { const {x,z}=world.slide(catT.x,catT.z,motor.y,.2,motor.cfg.step); catT.set(x,world.groundAt(x,z,cat.position.y,motor.cfg.step),z); }
   const cd=catT.clone().sub(cat.position); cd.y=0;
   if(first) cat.position.copy(catT); else cat.position.lerp(catT,1-Math.exp(-dt*3));
   const waddle=cat.userData.waddle, catStep=Math.sin(S.phase*1.3+1);
@@ -682,12 +736,22 @@ function update(dt){
   if(waddle) waddle.rotation.z=catStep*.14*k;
   if(cd.lengthSq()>.0004) cat.rotation.y=lerpAngle(cat.rotation.y,Math.atan2(cd.x,cd.z),1-Math.exp(-dt*6));
   // camera
-  if(S.auto&&!S.drag){ S.yaw=lerp(S.yaw,.3,1-Math.exp(-dt*.6)); S.pitch=lerp(S.pitch,.02,1-Math.exp(-dt*.6)); }
-  const ch=Math.atan2(t.x,t.z)+S.yaw, f=new V3(Math.sin(ch),0,Math.cos(ch)), rc=new V3(-f.z,0,f.x);
-  const dist=5.4, wantPos=hp.clone().addScaledVector(f,-dist).addScaledVector(rc,-1.05); wantPos.y+=2.3+S.pitch*5;
-  const wantLook=hp.clone().addScaledVector(f,10).addScaledVector(rc,-1.05); wantLook.y+=1.2-S.pitch*4;
-  if(first){ camPos.copy(wantPos); camLook.copy(wantLook); first=false; }
-  else { camPos.lerp(wantPos,1-Math.exp(-dt*3.5)); camLook.lerp(wantLook,1-Math.exp(-dt*5)); }
+  if(auto&&!S.drag){ S.yaw=lerpAngle(S.yaw,roadYaw(S.u)+AUTO_YAW,1-Math.exp(-dt*.6)); S.pitch=lerp(S.pitch,.02,1-Math.exp(-dt*.6)); }
+  else if(!S.drag&&time-S.dragEnd>1.2&&motor.speed>.5){   // trail behind the hero, but never swing round when they walk toward the camera
+    const want=Math.atan2(motor.vx,motor.vz), off=Math.abs(lerpAngle(0,want-S.yaw,1));
+    if(off<1.9) S.yaw=lerpAngle(S.yaw,want,1-Math.exp(-dt*.7));
+  }
+  if(first) camPivot.copy(hp);
+  else { camPivot.x=lerp(camPivot.x,hp.x,1-Math.exp(-dt*9)); camPivot.z=lerp(camPivot.z,hp.z,1-Math.exp(-dt*9)); camPivot.y=lerp(camPivot.y,hp.y,1-Math.exp(-dt*5)); }
+  const cf=new V3(Math.sin(S.yaw),0,Math.cos(S.yaw)), crt=new V3(-cf.z,0,cf.x), zoom=S.dist/5.4;
+  const wantPos=camPivot.clone().addScaledVector(cf,-S.dist).addScaledVector(crt,-1.05); wantPos.y+=(2.3+S.pitch*5)*zoom;
+  camLook.copy(camPivot).addScaledVector(cf,10).addScaledVector(crt,-1.05); camLook.y+=1.2-S.pitch*4;
+  // the boom shortens at once so it never enters a wall, and eases back out
+  camHead.copy(camPivot); camHead.y+=1.5;
+  const clear=world.clearFraction(camHead,wantPos);
+  S.boom=clear<S.boom||first?clear:lerp(S.boom,clear,1-Math.exp(-dt*3));
+  camPos.copy(camHead).lerp(wantPos,S.boom);
+  first=false;
   camera.position.copy(camPos); camera.lookAt(camLook);
   sky.position.copy(camera.position);
   sun.position.copy(hp).addScaledVector(SUN,150); sun.target.position.copy(hp); sun.target.updateMatrixWorld();
@@ -755,6 +819,65 @@ function useRoad(gltf){
   pathMat.map=pathMat.bumpMap=null; pathMat.color.set(0x2a231b); pathMat.needsUpdate=true;
   pathMesh.position.y=-.09;
 }
+// Leaf normals are baked to point out of each clump, so back faces must keep them instead of flipping.
+function leafMaterial(base, amt){
+  const mat=windify(base.clone(), amt), wind=mat.onBeforeCompile;
+  mat.side=THREE.DoubleSide;
+  mat.onBeforeCompile=sh=>{ wind(sh); sh.fragmentShader=sh.fragmentShader.replace('#include <normal_fragment_begin>',
+    THREE.ShaderChunk.normal_fragment_begin.replace('gl_FrontFacing ? 1.0 : - 1.0','1.0')); };
+  mat.customProgramCacheKey=()=>'leaf'+amt;
+  return mat;
+}
+function useFoliage(gltf){
+  // Its own sequence: assets load in any order, so sharing rnd() would make the rock layout vary.
+  let fs=4177; const f=()=>{ fs=fs+0x6D2B79F5|0; let t=Math.imul(fs^fs>>>15,1|fs); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; };
+  const between=(a,b)=>a+(b-a)*f(), node=n=>gltf.scene.getObjectByName(n), base=node('tree_0_leaf').material;
+  const treeLeaf=leafMaterial(base,.012), bushLeaf=leafMaterial(base,.05);
+  const m=new THREE.Matrix4(), q=new THREE.Quaternion(), tint=new THREE.Color();
+  const plant=(name,list,leaf,cast)=>{
+    if(!list.length) return;
+    const wood=node(name+'_wood'), parts=[[node(name+'_leaf'),leaf]]; if(wood) parts.push([wood,wood.material]);
+    for(const [v,mat] of parts){
+      const im=new THREE.InstancedMesh(v.geometry,mat,list.length);
+      list.forEach((x,i)=>{ im.setMatrixAt(i,x); if(mat===leaf) im.setColorAt(i,tint.setRGB(between(.8,1.12),between(.86,1.1),between(.75,1))); });
+      im.castShadow=cast; im.receiveShadow=true; im.frustumCulled=false; scene.add(im);
+    }
+  };
+  const matrices=im=>Array.from({length:im.count},(_,i)=>{ const x=new THREE.Matrix4(); im.getMatrixAt(i,x); return x; });
+  const at=(pos,s)=>m.clone().compose(pos,q.setFromAxisAngle(UP,f()*6.3),new V3(s*between(.9,1.15),s*between(.85,1.2),s*between(.9,1.15)));
+  // replace the blob trees in place
+  const near=matrices(forests.near[0]), tops=matrices(forests.tops[0]);
+  [...forests.near,...forests.tops].forEach(o=>{ o.visible=false; });
+  const tree=[near.filter((_,i)=>i%2),near.filter((_,i)=>!(i%2))];
+  // small trees on the lip; only a few, so the view to the city stays open
+  [.35,.66,.76].forEach((u,i)=>tree[i%2].push(at(place(u,-(HALF+1.05),-.4),between(.46,.56))));
+  plant('tree_0',tree[0],treeLeaf,true); plant('tree_1',tree[1],treeLeaf,true); plant('tree_far',tops,treeLeaf,false);
+  // verge bushes in patches, kept clear of the lamps and the arch
+  const verge=(lo,hi,s0,s1,dy,big,cast)=>{ const kinds={bush_0:[],bush_1:[],bloom_0:[],bloom_1:[],bloom_2:[]};
+    for(let d=2;d<PATH_LEN;d+=between(lo,hi)){
+    const u=d/PATH_LEN, s=between(s0,s1), pos=place(u,s,dy);
+    if(noise3(d*.1,s>0?7:3,0)<-.16 || Math.abs(u-.62)*PATH_LEN<2.4) continue;
+    if(lamps.some(L=>L.g.position.distanceTo(pos)<1.5)) continue;
+    const r=f(), kind=r<.42?'bush_0':r<.74?'bush_1':r<.84?'bloom_0':r<.93?'bloom_1':'bloom_2';
+    kinds[kind].push(at(pos,between(.75,big)));
+    }
+    for(const [name,list] of Object.entries(kinds)) plant(name,list,bushLeaf,cast);
+  };
+  // the sun is on the left, so only that side's shadows reach the road
+  verge(.75,1.7,-(HALF+1.15),-(HALF+.4),-.28,1.35,true);
+  verge(1.5,3.4,HALF+.7,HALF+2,-.2,1.25,false);
+  // grass: new tufts on the old spots, then golden drifts along both verges
+  const blades=leafMaterial(base,.28), tufts=[[],[]]; blades.roughness=1;
+  matrices(forests.grass).forEach((x,i)=>tufts[i%2].push(x));
+  forests.grass.visible=false;
+  const drift=(n,s0,s1,dy)=>{ for(let i=0;i<n;i++){
+    const d=f()*PATH_LEN, s=between(s0,s1);
+    if(noise3(d*.07,s>0?11:5,0)>-.1) tufts[f()<.7?0:1].push(at(place(d/PATH_LEN,s,dy),between(.8,1.5)));
+  } };
+  drift(1100,-(HALF+.9),-(HALF-.1),-.1);
+  drift(600,HALF-.1,HALF+1.8,-.12);
+  plant('grass_0',tufts[0],blades,false); plant('grass_1',tufts[1],blades,false);
+}
 function useArchway(gltf){
   archway.proc.forEach(o=>archway.g.remove(o));
   gltf.scene.traverse(o=>{ if(o.isMesh && o.material.name==='stone') grain(o.material,.8); });
@@ -771,11 +894,11 @@ function useLamp(gltf){
   }
 }
 function useRocks(gltf){
-  const node=n=>gltf.scene.getObjectByName(n), mat=grain(node('rock_0').material);
+  const node=n=>gltf.scene.getObjectByName(n), mat=grain(node('rock_0').material,.28);
   const groups=new Map(), m=new THREE.Matrix4(), q=new THREE.Quaternion(), e=new THREE.Euler(0,0,0,'YXZ');
   const ivyLists=[[],[],[],[]];
-  const put=(type,pos,s,yaw,cast,sv=[1,1,1],ivy=false)=>{
-    const k=type+(cast?'c':''); if(!groups.has(k)) groups.set(k,{type,cast,list:[]});
+  const put=(type,pos,s,yaw,cast,sv=[1,1,1],ivy=false,lo=false)=>{
+    const k=type+(cast?'c':'')+(lo?'l':''); if(!groups.has(k)) groups.set(k,{type,cast,lo,list:[]});
     q.setFromEuler(e.set(rr(-.06,.06),yaw,rr(-.06,.06)));
     const x=m.clone().compose(pos,q,new V3(s*sv[0],s*sv[1],s*sv[2]));
     groups.get(k).list.push(x);
@@ -787,13 +910,13 @@ function useRocks(gltf){
     for(let d=rr(0,step); d<PATH_LEN; d+=step*rr(.8,1.15)){
       const u=d/PATH_LEN, {t}=fr(u), s=rr(s0,s1), type=Math.floor(rnd()*4);
       const pos=place(u, 3.8+2.9*s+Math.max(y,0)*.2+rr(0,.5), y), yaw=along(t)+rr(-.25,.25);
-      put(type,pos,s,yaw,cast,[1,1,1],rnd()<ivyP);
+      put(type,pos,s,yaw,cast,[1,1,1],rnd()<ivyP,y>=20);
     }
   }
   // the procedural pillars keep their shafts but get sculpted crowns
   for(const [x,z,ty,r] of pillars) for(let i=0;i<3;i++){
     const a=rnd()*6, d=i?r*.5:0;
-    put(4+i%2, new V3(x+Math.cos(a)*d,ty-r*.2,z+Math.sin(a)*d), r*(i?.2:.24), rnd()*6, false);
+    put(4+i%2, new V3(x+Math.cos(a)*d,ty-r*.2,z+Math.sin(a)*d), r*(i?.2:.24), rnd()*6, false, [1,1,1], false, true);
   }
   // ledges under the left lip
   for(let d=rr(0,8); d<PATH_LEN; d+=rr(7,13)){
@@ -802,8 +925,8 @@ function useRocks(gltf){
   }
   // roadside boulders take over the procedural ones' spots
   boulderMeshes.forEach((b,i)=>{ b.visible=false; put(6+i%2, b.position.clone().setY(b.position.y-.3*b.scale.y), .62*b.scale.y, b.rotation.y, true, [b.scale.x/b.scale.y,1,b.scale.z/b.scale.y]); });
-  for(const {type,cast,list} of groups.values()){
-    const im=new THREE.InstancedMesh(node('rock_'+type).geometry, mat, list.length);
+  for(const {type,cast,lo,list} of groups.values()){
+    const im=new THREE.InstancedMesh(node(`rock_${type}${lo?'_lo':''}`).geometry, mat, list.length);
     list.forEach((x,i)=>im.setMatrixAt(i,x));
     im.castShadow=cast; im.receiveShadow=true; im.frustumCulled=false; scene.add(im);
   }
@@ -852,10 +975,13 @@ function stepHeroWalk(dt){
 const clock=new THREE.Clock();
 function loop(){
   const dt=Math.min(clock.getDelta(),.05);
-  update(dt); composer.render();
+  if(modes.mode!=='Paused') update(dt);   // the world freezes but keeps rendering behind the menu
+  composer.render();
   requestAnimationFrame(loop);
 }
-const assetState=window.__lumina={ renderer };
+const assetState=window.__lumina={ renderer, camera, shell, S, motor, world, corridor, colliders };
+// also on <html data-road="glb">, so tests/smoke.ps1 can read each asset's result from a headless DOM dump
+const markAsset=(name,state)=>{ assetState[name]=state; document.documentElement.dataset[name]=state; };
 // published artifacts can't serve .glb, so they use the JSON copies from blender/glb_to_json.py
 // They're repacked into a GLB here so the loader never has to fetch a data: URI, which a strict page policy can block.
 async function jsonToGlb(url){
@@ -872,12 +998,14 @@ async function jsonToGlb(url){
 const loadAsset=name=>{ const l=new GLTFLoader(), web=()=>jsonToGlb(`assets/web/${name}.gltf.json`).then(b=>l.parseAsync(b,''));
   return new URLSearchParams(location.search).has('webjson') ? web() : l.loadAsync(`assets/${name}.glb`).catch(web); };
 const assetsDone=new URLSearchParams(location.search).has('noglb') ? Promise.resolve() : Promise.allSettled(
-  [['road',useRoad],['archway',useArchway],['lamp',useLamp],['rocks',useRocks],['city',useCity],['hero',useHero],['edda',useEdda]].map(([name,use])=>
-    loadAsset(name).then(use).then(()=>{ assetState[name]='glb'; })
-      .catch(err=>{ assetState[name]='procedural'; console.warn(`assets/${name}.glb not used, keeping the procedural version:`, err); })));
+  [['road',useRoad],['archway',useArchway],['lamp',useLamp],['rocks',useRocks],['city',useCity],['hero',useHero],['edda',useEdda],['foliage',useFoliage]].map(([name,use])=>
+    loadAsset(name).then(use).then(()=>markAsset(name,'glb'))
+      .catch(err=>{ markAsset(name,'procedural'); console.warn(`assets/${name}.glb not used, keeping the procedural version:`, err); })));
 // don't hold the opening fade for a slow connection; late assets still swap in
 Promise.race([assetsDone, new Promise(r=>setTimeout(r,9000))]).then(()=>{
-  if(new URLSearchParams(location.search).has('shot')) fadeEl.style.transition='none'; // headless captures
+  const q=new URLSearchParams(location.search);
+  if(q.has('shot')) fadeEl.style.transition='none'; // headless captures
+  shell.start({skipTitle:q.has('shot')||q.has('u')});
   update(0.016); composer.render();
   requestAnimationFrame(()=>{ fadeEl.textContent=''; fadeEl.style.opacity=0; loop(); });
 });

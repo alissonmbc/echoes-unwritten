@@ -1,8 +1,9 @@
-"""Eight sculpted rock chunks plus two ivy curtains.
+"""Eight sculpted rock chunks plus ivy curtains.
 
-Each rock is a cluster of convex hulls, voxel-remeshed into one skin, displaced along
-tilted strata, then decimated and vertex-coloured. Node names rock_0..7 and ivy_0..1
-are what index.html looks up. Rocks are about 6-8 m across, sitting on z=0.
+Each rock is a cluster of convex hulls, voxel-remeshed into one skin,
+melted into a rounded mass, cut into flat-faced slabs with cracks between them, then
+decimated and vertex-coloured. Node names rock_0..7, their cheap rock_N_lo copies and
+ivy_0..3 are what index.html looks up. Rocks are about 6-8 m across, sitting on z=0.
 """
 import math
 import random
@@ -16,15 +17,18 @@ from common import Part, clamp, export, fbm, leaves, material, mix, smooth, use_
 
 # (hull count, overall size x, y, z, strata tilt, target triangles)
 SPECS = [
-    (7, 7.0, 5.0, 11.0, 0.45, 12000),  # tall slabs for the cliff face
-    (6, 8.0, 5.0, 9.0, -0.35, 12000),
-    (8, 6.5, 6.0, 12.0, 0.6, 12000),
-    (6, 9.0, 5.5, 7.5, 0.25, 11000),
-    (5, 9.0, 6.0, 4.5, 0.12, 7000),    # ledges
-    (5, 7.0, 7.0, 3.6, -0.15, 6000),
+    (7, 7.0, 5.0, 11.0, 0.45, 9000),   # tall slabs for the cliff face
+    (6, 8.0, 5.0, 9.0, -0.35, 9000),
+    (8, 6.5, 6.0, 12.0, 0.6, 9000),
+    (6, 9.0, 5.5, 7.5, 0.25, 9000),
+    (5, 9.0, 6.0, 4.5, 0.12, 6000),    # ledges
+    (5, 7.0, 7.0, 3.6, -0.15, 5000),
     (3, 3.2, 2.8, 2.2, 0.3, 3000),     # boulders
     (4, 3.6, 3.0, 2.8, -0.4, 3400),
 ]
+LO_TRIS = 1500   # the _lo copies, for the upper cliff rows and pillar crowns
+CELL = 0.3       # slab width, as a fraction of a rock's longest side
+SOFTEN = 30      # smoothing passes on the raw hulls; more gives a rounder mass
 
 
 def hull_cluster(rnd, n, sx, sy, sz, tilt):
@@ -60,6 +64,40 @@ def evaluated_copy(scn, ob, name):
     return me
 
 
+def slab_cell(p, off, size, tall):
+    """Which slab p belongs to, and 0..1 for how far it sits from that slab's edge."""
+    wobble = Vector((fbm(p * 0.3 + off, 2), fbm(p * 0.3 + off + Vector((3, 9, 0)), 2), 0)) * 0.45
+    c = Vector((p.x / (size * CELL), p.y / (size * CELL), p.z / (size * CELL * tall))) + wobble + off
+    dist, points = noise.voronoi(c)
+    return tuple(round(x, 3) for x in points[0]), smooth(0.0, 0.09, dist[1] - dist[0])
+
+
+def cut_slabs(bm, off, size, tall):
+    """Flatten each Voronoi cell onto its own plane.
+
+    The pull fades to nothing at a cell's edge, where a small dent makes the crack. Every cell
+    reaches the same value there, so neighbouring slabs can't leave a hard step, and fitting the
+    plane to the surface keeps the rock's overall size.
+    """
+    cells = {}
+    for v in bm.verts:
+        key, face = slab_cell(v.co, off, size, tall)
+        cells.setdefault(key, []).append((v, face))
+    for key, members in cells.items():
+        r = random.Random(repr(key))
+        n = sum((v.normal for v, _ in members), Vector())
+        if n.length < len(members) * 0.4:      # wraps round a corner, so no single plane fits it
+            n = None
+        else:
+            n = (n.normalized() + Vector((r.gauss(0, 0.13), r.gauss(0, 0.13), r.gauss(0, 0.13)))).normalized()
+            plane = sum(v.co.dot(n) for v, _ in members) / len(members) + r.uniform(-0.25, 0.25)
+        for v, face in members:
+            dent = v.normal * (1 - face) * -0.2
+            if n:
+                v.co = v.co + n * clamp(plane - v.co.dot(n), -1.1, 1.1) * face * 0.94
+            v.co = v.co + dent
+
+
 def sculpt(scn, spec, idx, rnd):
     n, sx, sy, sz, tilt, target = spec
     me = bpy.data.meshes.new(f"_raw{idx}")
@@ -79,49 +117,27 @@ def sculpt(scn, spec, idx, rnd):
     ob.data = skin
     bpy.data.meshes.remove(me)
 
-    axis = (Matrix.Rotation(tilt, 3, "Y") @ Vector((0, 0, 1))).normalized()
     off = Vector((idx * 13.1, idx * 7.7, idx * 3.3))
     bm = bmesh.new()
     bm.from_mesh(skin)
-    bm.normal_update()
     size = max(sx, sy, sz)
+
+    # weathering first: melt the hulls into one rounded mass
+    for _ in range(SOFTEN):
+        bmesh.ops.smooth_vert(bm, verts=bm.verts, factor=0.6, use_axis_x=True, use_axis_y=True, use_axis_z=True)
+    bm.normal_update()
+
     for v in bm.verts:
-        v.co = v.co + v.normal * fbm(v.co * 0.16 + off, 2) * 0.9
+        v.co = v.co + v.normal * fbm(v.co * 0.16 + off, 2) * 0.7
+    bm.normal_update()
 
-    # chisel: rock fractures along joint sets, so snap the skin onto planes from three
-    # families (bedding plus two steep joints) rather than adding round noise
-    j1 = axis
-    j2 = axis.cross(Vector((0.3, 1, 0.1))).normalized()
-    j3 = j1.cross(j2).normalized()
-    fams = (j1, j2, j3)
-    cell = size / 11
-    scales = (cell * 0.9, cell * 2.1, cell * 1.7)   # cells are thin across the bedding
-
-    def patch_key(p, n):
-        c = Vector((p.dot(j1) / scales[0], p.dot(j2) / scales[1], p.dot(j3) / scales[2])) + off
-        f = noise.voronoi(c)[1][0]
-        best = max(range(3), key=lambda i: abs(n.dot(fams[i])))
-        return (round(f[0], 3), round(f[1], 3), round(f[2], 3), best, n.dot(fams[best]) > 0)
-
-    groups = {}
-    for v in bm.verts:
-        groups.setdefault(patch_key(v.co, v.normal), []).append(v)
-    for key, vs in groups.items():
-        r = random.Random(hash(key))
-        fam = fams[key[3]] * (1 if key[4] else -1)
-        n = (fam + Vector((r.gauss(0, 0.2), r.gauss(0, 0.2), r.gauss(0, 0.2)))).normalized()
-        mean = sum(v.co.dot(n) for v in vs) / len(vs)
-        target_d = mean - r.uniform(0.0, 0.5) * cell
-        for v in vs:
-            e = v.co.dot(n) - target_d
-            v.co = v.co - n * max(min(e, cell * 1.5), -cell * 1.5) * 0.93
-
-    # thin bedding seams and a little surface tooth
+    # then cut the slabs, soften their edges a touch, and add a very slight surface tooth
+    cut_slabs(bm, off, size, 3.0 if idx < 4 else 1.15)   # cliff rocks split into upright slabs, the rest into blocks
+    for _ in range(2):
+        bmesh.ops.smooth_vert(bm, verts=bm.verts, factor=0.5, use_axis_x=True, use_axis_y=True, use_axis_z=True)
     for v in bm.verts:
         p = v.co
-        h = p.dot(axis) / size * 7 + fbm(p * 0.1 + off, 2) * 1.2
-        seam = smooth(0.93, 0.995, abs((h % 1.0) - 0.5) * 2) * 0.13
-        v.co = p - axis * seam + Vector((fbm(p * 0.9 + off, 2), fbm(p * 0.9 + off + Vector((8, 0, 0)), 2), fbm(p * 0.9 - off, 2))) * 0.09
+        v.co = p + Vector((fbm(p * 0.7 + off, 2), fbm(p * 0.7 + off + Vector((8, 0, 0)), 2), fbm(p * 0.7 - off, 2))) * 0.05
     zcut = min(v.co.z for v in bm.verts) + 0.22 * sz
     for v in bm.verts:
         v.co.z = max(v.co.z, zcut)
@@ -144,7 +160,7 @@ def sculpt(scn, spec, idx, rnd):
         v.co -= Vector((cx, cy, zmin))
     final.update()
 
-    # colour: cool grey stone, warm iron stains, darker cracks, moss on what faces up
+    # colour: warm ochre stone, broad grey weathering, dark cracks, moss low down on what faces up
     col = {}
     for p in final.polygons:
         up = p.normal.z
@@ -152,27 +168,53 @@ def sculpt(scn, spec, idx, rnd):
             a = col.setdefault(vi, [0.0, 0])
             a[0] += up
             a[1] += 1
+    # cracks: a vertex sitting below the average of its neighbours is in a crevice
+    near = [[Vector(), 0, 0.0] for _ in final.vertices]
+    for e in final.edges:
+        a, b = e.vertices
+        pa, pb = final.vertices[a].co, final.vertices[b].co
+        for i, q in ((a, pb), (b, pa)):
+            near[i][0] += q
+            near[i][1] += 1
+            near[i][2] += (q - final.vertices[i].co).length
     at = final.color_attributes.new("Color", "FLOAT_COLOR", "POINT")
     flat = []
     for v in final.vertices:
         p = v.co
-        k = fbm(p * 0.33 + off, 3)
-        c = mix((0.125, 0.122, 0.118), (0.40, 0.385, 0.355), clamp(k * 1.4 + 0.5))
-        h = p.dot(axis) / size * 7 + fbm(p * 0.1 + off, 2) * 1.2
-        band = abs((h % 1.0) - 0.5) * 2
-        c = mix(c, (0.07, 0.066, 0.06), smooth(0.9, 1.0, band) * 0.55)
-        c = mix(c, (0.37, 0.27, 0.17), smooth(0.05, 0.3, fbm(p * 0.17 + off + Vector((5, 5, 5)), 2)) * 0.42)
+        k = fbm(p * 0.12 + off, 3)
+        c = mix((0.24, 0.195, 0.145), (0.43, 0.345, 0.245), clamp(k * 1.3 + 0.5))
+        c = mix(c, (0.25, 0.24, 0.225), smooth(0.0, 0.32, fbm(p * 0.07 + off + Vector((5, 5, 5)), 2)) * 0.55)
+        total, count, length = near[v.index]
+        if count:
+            dent = (total / count - p).dot(v.normal) / max(length / count, 1e-4)
+            c = mix(c, (0.05, 0.043, 0.036), smooth(0.04, 0.3, dent) * 0.85)
         s, m = col.get(v.index, (0.0, 1))
         up = s / max(m, 1)
-        moss = smooth(0.42, 0.78, up) * clamp(fbm(p * 0.5 + off, 3) * 2.2 + 0.72)
+        low = 1 - smooth(0.25, 0.55, p.z / max(sz, 0.01))
+        moss = smooth(0.42, 0.78, up) * clamp(fbm(p * 0.5 + off, 3) * 2.2 + 0.72) * (0.35 + low * 0.65)
         c = mix(c, (0.09, 0.125, 0.04), moss * 0.85)
         flat.extend((c[0], c[1], c[2], 1.0))
     at.data.foreach_set("color", flat)
     final.color_attributes.active_color = at
     final.shade_smooth()
-    final.set_sharp_from_angle(angle=math.radians(58))
+    final.set_sharp_from_angle(angle=math.radians(80))
     final.materials.append(bpy.data.materials["rock"])
     out = bpy.data.objects.new(f"rock_{idx}", final)
+    scn.collection.objects.link(out)
+    return out
+
+
+def low_poly(scn, rock_ob):
+    """A cheap copy with the same colours, for rocks that are never seen up close."""
+    ob = bpy.data.objects.new("_lo", rock_ob.data.copy())
+    scn.collection.objects.link(ob)
+    dec = ob.modifiers.new("dec", "DECIMATE")
+    dec.ratio = clamp(LO_TRIS / max(sum(len(p.vertices) - 2 for p in rock_ob.data.polygons), 1), 0.01, 1)
+    me = evaluated_copy(scn, ob, rock_ob.name + "_lo")
+    old = ob.data
+    bpy.data.objects.remove(ob, do_unlink=True)
+    bpy.data.meshes.remove(old)
+    out = bpy.data.objects.new(rock_ob.name + "_lo", me)
     scn.collection.objects.link(out)
     return out
 
@@ -217,7 +259,8 @@ def build():
         o.location = ((i % 4) * 14 - 21, (i // 4) * 14, 0)
     for i, o in enumerate(ivies):
         o.location = objs[i].location
-    objs += ivies
+    lows = [low_poly(scn, o) for o in objs]
+    objs += ivies + lows
     info = export(objs, "rocks.glb")
     info["tris"] = {o.name: sum(len(p.vertices) - 2 for p in o.data.polygons) for o in objs}
     return info, scn
